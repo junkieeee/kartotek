@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { db } from './firebase';
+import { auth } from './firebase';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import Auth from './Auth';
 import {
   fetchQuestionsFromOpenRouter,
   fetchAusbildungContentFromOpenRouter,
@@ -144,6 +146,8 @@ function WeeklyChart({ daily }) {
 }
 
 export default function App() {
+    const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [theme, setTheme] = useState(() => localStorage.getItem('kartotek_theme') || 'dark');
   const [language, setLanguage] = useState(() => localStorage.getItem('kartotek_lang') || 'tr');
   const [streak, setStreak] = useState(() => loadStreak());
@@ -163,6 +167,15 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [loadingLabel, setLoadingLabel] = useState("Sorular hazırlanıyor...");
   const [error, setError] = useState("");
+
+  useEffect(() => {
+  const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    setUser(currentUser);
+    setAuthLoading(false);
+  });
+
+  return unsubscribe;
+}, []);
 
   useEffect(() => {
     localStorage.setItem('kartotek_theme', theme);
@@ -275,11 +288,27 @@ export default function App() {
 
   const goTo = (tab) => { setActiveTab(tab); resetNav(); };
 
+const handleLogout = async () => {
+  try {
+    await signOut(auth);
+  } catch (error) {
+    console.error("Çıkış yapılamadı:", error);
+  }
+};
+
+if (authLoading) {
+  return null;
+}
+
+if (!user) {
+  return <Auth />;
+}
+
   return (
     <div className="app-shell" data-theme={theme}>
       <header className="app-header">
         <span className="brand">Kartotek</span>
-        <button className="logout-btn" onClick={() => alert("Çıkış yapıldı")}>Çıkış</button>
+        <button className="logout-btn" onClick={handleLogout}>Çıkış</button>
       </header>
 
       <main className="app-main">
