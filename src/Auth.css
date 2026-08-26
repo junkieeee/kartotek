@@ -1,0 +1,72 @@
+.auth-shell {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100dvh;
+  background: var(--bg);
+  font-family: "Inter", system-ui, sans-serif;
+  padding: 20px;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+  padding: clamp(28px, 6vw, 40px) clamp(20px, 5vw, 32px) 30px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+}
+
+.auth-head { text-align: center; margin-bottom: 26px; }
+.auth-head h2 { font-size: 22px; font-weight: 700; color: var(--text); margin: 0 0 8px; }
+.auth-head p { color: var(--text-muted); font-size: 13px; margin: 0; }
+
+.auth-error {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger);
+  color: var(--text);
+  padding: 11px;
+  border-radius: 8px;
+  font-size: 13px;
+  text-align: center;
+  margin-bottom: 18px;
+}
+
+.auth-form { display: flex; flex-direction: column; gap: 16px; }
+
+.field label {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 7px;
+}
+.field input {
+  width: 100%;
+  padding: 12px 13px;
+  border-radius: 8px;
+  background: var(--surface-alt);
+  color: var(--text);
+  border: 1px solid var(--border);
+  outline: none;
+  font-size: 14px;
+  font-family: inherit;
+}
+.field input::placeholder { color: var(--text-muted); }
+.field input:focus { border-color: var(--primary); }
+
+.auth-submit {
+  margin-top: 6px;
+  padding: 13px;
+  background: var(--primary);
+  color: var(--primary-text);
+  border: none;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+}
+.auth-submit:hover { opacity: 0.9; }
+
+.auth-switch { text-align: center; margin-top: 22px; font-size: 13px; color: var(--text-muted); }
+.auth-switch span { color: var(--primary); cursor: pointer; font-weight: 600; }
