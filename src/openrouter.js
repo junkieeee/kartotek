@@ -4,10 +4,17 @@ import { doc, getDoc, setDoc } from "firebase/firestore";
 
 const OPENROUTER_API_KEY = import.meta.env.VITE_OPENROUTER_API_KEY;
 
-// Firestore doküman ID'lerinde "/" kullanılamadığı için temizliyoruz
+// Firestore doküman ID'leri için güvenli metin dönüştürücü
 function safeId(str) {
-  return str.replace(/\//g, "-");
+  return String(str)
+    .replace(/\//g, "-")
+    .replace(/\s+/g, "_")
+    .trim();
 }
+
+// ---------------------------------------------------------
+// FIRESTORE POOL İŞLEMLERİ
+// ---------------------------------------------------------
 
 async function getPooledData(collectionName, docId) {
   try {
@@ -21,11 +28,18 @@ async function getPooledData(collectionName, docId) {
 
 async function savePooledData(collectionName, docId, data) {
   try {
-    await setDoc(doc(db, collectionName, docId), { ...data, updatedAt: Date.now() });
+    await setDoc(doc(db, collectionName, docId), {
+      ...data,
+      updatedAt: Date.now(),
+    });
   } catch (err) {
     console.error("Pool kaydetme hatası:", err);
   }
 }
+
+// ---------------------------------------------------------
+// OPENROUTER API ÇAĞRISI (Retry & Rate Limit Yönetimi)
+// ---------------------------------------------------------
 
 async function callOpenRouter(prompt, retries = 3, delay = 4000) {
   for (let i = 0; i < retries; i++) {
@@ -36,27 +50,36 @@ async function callOpenRouter(prompt, retries = 3, delay = 4000) {
           "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
           "Content-Type": "application/json",
           "HTTP-Referer": window.location.origin,
-          "X-Title": "Kartotek App"
+          "X-Title": "Kartotek App",
         },
         body: JSON.stringify({
           model: "minimax/minimax-m2.7:free",
-          messages: [{ role: "user", content: prompt }]
-        })
+          messages: [{ role: "user", content: prompt }],
+        }),
       });
 
+      // 429 Rate Limit Yönetimi
       if (response.status === 429 && i < retries - 1) {
-        console.warn(`429 Too Many Requests alındı, ${delay / 1000} saniye bekleniyor... (Deneme ${i + 1}/${retries})`);
-        await new Promise(res => setTimeout(res, delay));
+        console.warn(
+          `429 Too Many Requests alındı, ${delay / 1000} saniye bekleniyor... (Deneme ${i + 1}/${retries})`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
         continue;
       }
 
       if (!response.ok) {
-        throw new Error(`OpenRouter HTTP Hatası: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(`OpenRouter HTTP Hatası: ${response.status} ${errorText}`);
       }
 
       const result = await response.json();
       let content = result.choices?.[0]?.message?.content || "";
-      content = content.replace(/```json/g, "").replace(/```/g, "").replace(/```markdown/g, "").trim();
+
+      content = content
+        .replace(/```json/gi, "")
+        .replace(/```/g, "")
+        .replace(/```markdown/gi, "")
+        .trim();
 
       if (!content) {
         throw new Error("AI yanıtı boş döndü.");
@@ -64,11 +87,16 @@ async function callOpenRouter(prompt, retries = 3, delay = 4000) {
 
       return content;
     } catch (err) {
+      console.error(`OpenRouter denemesi ${i + 1} başarısız:`, err);
       if (i === retries - 1) throw err;
-      await new Promise(res => setTimeout(res, delay));
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 }
+
+// ---------------------------------------------------------
+// YARDIMCI FONKSİYONLAR
+// ---------------------------------------------------------
 
 function shuffle(arr) {
   const a = [...arr];
@@ -93,10 +121,10 @@ function dedupeQuestions(list) {
 }
 
 const GENERATION_BATCH = 10;
-const MAX_TOPUP_ROUNDS = 4; // tek çağrıda en fazla bu kadar ek üretim turu (API'yi boğmamak için)
+const MAX_TOPUP_ROUNDS = 4; // tek çağrıda en fazla bu kadar ek üretim turu
 
 /* =========================================================================
-   DİL BÖLÜMÜ — çoktan seçmeli + boşluk doldurma + cümle kurma karışık soru havuzu
+   1. DİL BÖLÜMÜ — Çoktan seçmeli + Boşluk doldurma + Cümle kurma Karışık Pool
    ========================================================================= */
 
 const DIL_TYPE_PROMPT = `
@@ -132,9 +160,10 @@ aşağıdaki JSON şemasına uy, "type" alanını asla unutma:
 
 KURALLAR:
 - "options"/"words"/"question"/"sentence"/"correctSentence" alanları Almanca olacak.
-- "explanation" kesinlikle akıcı ve doğal Türkçe olacak (2-3 cümle).
+- "explanation" kesinlikle akıcı ve doğal Türkçe olacak (2-3 cümle) ve sadece cevabı değil, gramer kuralını da açıklayacak.
 - fill_blank ve multiple_choice'ta "options" mutlaka 4 eleman içerecek.
 - sentence_order'da "words" dizisi doğru cümledeki sırayla DEĞİL, karıştırılmış sırada olacak; "correctSentence" ise doğru, noktalama işaretsiz tam cümle olacak.
+- Seviyeye uygun zorluk kullanılacak (Örn: C1 seviyesinde akademik ve ileri düzey Almanca kullan).
 - Saf bir JSON dizisi döndür, asla markdown blokları veya açıklama metni ekleme.
 `;
 
@@ -151,7 +180,6 @@ async function generateDilBatch(category, levelOrTopic, count) {
   return Array.isArray(parsed) ? parsed : [];
 }
 
-// Havuzu en az minCount'a çıkarır; zaten yeterliyse hiçbir şey yapmaz (API çağrısı yok).
 async function ensureDilPool(category, levelOrTopic, minCount) {
   const docId = safeId(`${category}_${levelOrTopic}`);
   let cached = await getPooledData("dilQuestions", docId);
@@ -167,32 +195,22 @@ async function ensureDilPool(category, levelOrTopic, minCount) {
   return pool;
 }
 
-// 1. Genel Dil Eğitimi Soru Üretici — havuzdan rastgele `count` egzersiz döner,
-// havuz yetersizse önce büyütür.
 export async function fetchQuestionsFromOpenRouter(category, levelOrTopic, count = 10) {
   const pool = await ensureDilPool(category, levelOrTopic, count);
   return shuffle(pool).slice(0, count);
 }
 
-// Havuzu büyütür ve sonucu döner (hata fırlatabilir — çağıran taraf isterse .catch ile
-// sessizce yutabilir, isterse arka plan zamanlayıcısında sırayla await edebilir).
-// "AI arka planda soru üretmeye devam etsin" isteğini karşılar: her seviye için
-// havuz hedefi kademeli olarak artırılır (gerçek anlamda "sonsuz" olmasa da kullanıcı
-// pratikte hiç aynı sorulara takılmaz).
 export async function topUpDilPool(category, levelOrTopic, targetSize = 40) {
   return ensureDilPool(category, levelOrTopic, targetSize);
 }
 
-// Sınırsız pratik modu için: havuzu (gerekirse büyüterek) belirtilen offset'ten
-// itibaren `count` adet egzersizle döner. Havuz tükenmeye yaklaşınca çağıran taraf
-// daha büyük bir minCount ile tekrar çağırarak yeni sorular alabilir.
 export async function fetchDilBatchForUnlimitedMode(category, levelOrTopic, offset, count = 10) {
   const pool = await ensureDilPool(category, levelOrTopic, offset + count);
   return pool.slice(offset, offset + count);
 }
 
 /* =========================================================================
-   MESLEKİ (PFLEGE) SORULARI
+   2. MESLEKİ (PFLEGEFACHKRAFT) SORULARI
    ========================================================================= */
 
 function buildPflegePrompt(subTopic, count) {
@@ -253,7 +271,7 @@ export async function topUpPflegePool(subTopic, targetSize = 40) {
 }
 
 /* =========================================================================
-   AUSBİLDUNG NOTLARI
+   3. AUSBİLDUNG NOTLARI
    ========================================================================= */
 
 export async function fetchAusbildungContentFromOpenRouter(mainCategory, subTopic) {
@@ -267,7 +285,7 @@ export async function fetchAusbildungContentFromOpenRouter(mainCategory, subTopi
 Kullanıcı "${mainCategory}" ana başlığı altında yer alan "${subTopic}" alt konusunu detaylı bir şekilde öğrenmek istiyor.
 
 GÖREV:
-Bu konu hakkında Almanya'daki hastane ve bakım evleri (Pflegeheim) standartlarına uygun, Almanca mesleki terimleri (Fachbegriffe) de parantez içinde belirterek, kapsamlı, maddeler halinde ve akıcı bir Türkçe ile detaylı bir ders/konu özeti hazırla.
+Bu konu hakkında Almanya'daki hastane ve bakım evleri (Pflegeheim) standartlarına uygun, Almanca mesleki terimleri (Fachbegriffe) de parantez içinde belirterek, özet yerine kapsamlı, maddeler halinde ve akıcı bir Türkçe ile detaylı bir ders/konu özeti hazırla.
 
 Lütfen yanıtını doğrudan düzgün yapılandırılmış metin olarak ver.`;
 
@@ -275,4 +293,103 @@ Lütfen yanıtını doğrudan düzgün yapılandırılmış metin olarak ver.`;
 
   await savePooledData("ausbildungContent", docId, { content });
   return content;
+}
+
+/* =========================================================================
+   4. C1 KONU ANLATIMLARI (DERS MÜFREDATI)
+   ========================================================================= */
+
+export async function fetchC1LessonFromOpenRouter(topic) {
+  const docId = safeId(`C1_${topic}`);
+
+  const cached = await getPooledData("c1Lessons", docId);
+  if (cached?.lesson) {
+    return cached.lesson;
+  }
+
+  const prompt = `
+Sen Goethe-Institut C1 ve telc C1 sınavlarına hazırlayan,
+Almanca gramer konusunda uzman, deneyimli bir Almanca öğretmenisin.
+
+Öğrenci C1 seviyesinde Almanca öğreniyor.
+
+KONU:
+"${topic}"
+
+ÇOK ÖNEMLİ:
+Bu bir ÖZET DEĞİL.
+Öğrenciye gerçekten ders anlatıyormuşsun gibi detaylı ve pedagojik bir konu anlatımı hazırla.
+
+Öğrencinin şunları anlamasını sağla:
+- Bu yapı nedir?
+- Ne anlama gelir?
+- Ne zaman kullanılır?
+- Neden kullanılır?
+- Nasıl kullanılır?
+- Cümle yapısı nasıldır?
+- Fiilin yeri neresidir?
+- Hangi durumlarda tercih edilir?
+- Hangi benzer yapılarla karıştırılır?
+- Aralarındaki fark nedir?
+- C1 seviyesinde hangi inceliklere dikkat edilmelidir?
+- En sık yapılan hatalar nelerdir?
+
+ÖZEL OLARAK:
+Eğer konu bağlaçlar / Konnektoren ise, her bağlacı TEK TEK anlat.
+Her bağlaç için:
+1. Almanca bağlaç
+2. Türkçe anlamı
+3. Kullanım amacı
+4. Hangi durumda kullanıldığı
+5. Cümle yapısı
+6. Kelime sırası
+7. Fiilin konumu
+8. Resmi / günlük kullanım farkı varsa belirt
+9. Benzer bağlaçlardan farkı
+10. En az 2 Almanca örnek
+11. Her örneğin Türkçe çevirisi
+12. Sık yapılan hata
+13. C1 seviyesinde önemli kullanım notu
+
+ÖĞRETİM TARZI:
+- Türkçe anlat.
+- Almanca örnekleri mutlaka göster.
+- Örneklerin Türkçe çevirisini ver.
+- Gerektiğinde doğru ve yanlış örnekleri karşılaştır.
+- C1 seviyesine uygun detay ver.
+
+ÖNEMLİ:
+Yanıt SADECE geçerli JSON olsun. Markdown kullanma. JSON dışında hiçbir açıklama yazma.
+
+ŞU FORMATTA DÖN:
+{
+  "title": "${topic}",
+  "intro": "Konunun genel açıklaması.",
+  "sections": [
+    {
+      "title": "Alt konu başlığı",
+      "explanation": "Detaylı Türkçe açıklama.",
+      "structure": "Almanca cümle yapısı",
+      "examples": [
+        {
+          "german": "Almanca örnek cümle.",
+          "turkish": "Türkçe çeviri."
+        },
+        {
+          "german": "İkinci Almanca örnek.",
+          "turkish": "Türkçe çeviri."
+        }
+      ],
+      "commonMistake": "Sık yapılan hata.",
+      "importantNote": "C1 seviyesinde önemli not."
+    }
+  ]
+}
+`;
+
+  const rawContent = await callOpenRouter(prompt);
+  const lesson = JSON.parse(rawContent);
+
+  await savePooledData("c1Lessons", docId, { lesson });
+  return lesson;
 }

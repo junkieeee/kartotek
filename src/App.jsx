@@ -6,6 +6,7 @@ import {
   fetchQuestionsFromOpenRouter,
   fetchAusbildungContentFromOpenRouter,
   fetchPflegeQuestionsFromOpenRouter,
+  fetchC1LessonFromOpenRouter,
   fetchDilBatchForUnlimitedMode,
   topUpDilPool,
   topUpPflegePool
@@ -257,6 +258,8 @@ export default function App() {
   const [selectedPflegeTopic, setSelectedPflegeTopic] = useState(null);
   const [selectedMainCategory, setSelectedMainCategory] = useState(null);
   const [selectedSubTopic, setSelectedSubTopic] = useState(null);
+  const [selectedC1Topic, setSelectedC1Topic] = useState(null);
+  const [c1Lesson, setC1Lesson] = useState(null);
 
   const [ausbildungContent, setAusbildungContent] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -282,8 +285,15 @@ export default function App() {
     localStorage.setItem('kartotek_lang', language);
   }, [language]);
 
-  const dilCategories = ["A1", "A2", "B1", "B2", "Gramer Pratiği"];
-
+  const dilCategories = ["A1", "A2", "B1", "B2","C1", "Gramer Pratiği"];
+  const c1Topics = [
+  "Konnektoren / Bağlaçlar",
+  "Konjunktiv II",
+  "Konjunktiv I",
+  "Passiv & Passiversatzformen",
+  "Partizipialkonstruktionen",
+  "Nominalisierung"
+];
   const pflegeTopics = [
     "Hasta İletişimi ve Mülakat",
     "Vital Bulgular (Tansiyon, Nabız, Ateş)",
@@ -394,6 +404,27 @@ export default function App() {
     }
   };
 
+  const loadC1Lesson = async (topic) => {
+  setSelectedC1Topic(topic);
+  setIsLoading(true);
+  setLoadingLabel("C1 konu anlatımı hazırlanıyor...");
+  setError("");
+  setC1Lesson(null);
+
+  try {
+    const lesson = await fetchC1LessonFromOpenRouter(topic);
+
+    setC1Lesson(lesson);
+    setStreak(recordStudyToday());
+  } catch (err) {
+    setError(
+      "C1 konu anlatımı yüklenirken hata oluştu: " + err.message
+    );
+  } finally {
+    setIsLoading(false);
+  }
+};
+
   const loadPflegeQuestions = async (topic) => {
     setSelectedPflegeTopic(topic);
     setIsUnlimitedMode(false);
@@ -444,6 +475,8 @@ export default function App() {
     setSelectedPflegeTopic(null);
     setSelectedMainCategory(null);
     setSelectedSubTopic(null);
+    setSelectedC1Topic(null);
+    setC1Lesson(null);
     setAusbildungContent("");
     setQuestions([]);
     setCurrentQuestionIndex(0);
@@ -620,7 +653,7 @@ export default function App() {
         )}
 
         {/* 1. DİL SEKMESİ */}
-        {!isLoading && activeTab === 'dil' && !selectedLevelOrTopic && (
+        {!isLoading && activeTab === 'dil' && !selectedLevelOrTopic && !selectedC1Topic && (
           <div>
             <div className="section-head">
               <h2>Almanca Dil Eğitimi</h2>
@@ -636,7 +669,19 @@ export default function App() {
             </div>
             <div className="row-list">
               {dilCategories.map((lvl) => (
-                <button key={lvl} onClick={() => loadDilQuestions(lvl, dilMode === 'unlimited')} className="row-btn">
+                <button
+                  key={lvl}
+                  onClick={() => {
+                    if (lvl === 'C1') {
+                      setSelectedLevelOrTopic('C1');
+                      setSelectedC1Topic(null);
+                      setC1Lesson(null);
+                      setQuestions([]);
+                    } else {
+                      loadDilQuestions(lvl);
+                    }
+                  }}
+                >
                   <span>
                     <span className="row-title">{lvl}</span>
                     <span className="row-sub">
@@ -651,6 +696,188 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* C1 ANA MENÜ */}
+{!isLoading &&
+  activeTab === 'dil' &&
+  selectedLevelOrTopic === 'C1' &&
+  !selectedC1Topic && (
+    <div>
+      <button onClick={resetNav} className="back-link">
+        ← Dil seviyelerine geri dön
+      </button>
+
+      <div className="section-head">
+        <h2>C1 Almanca</h2>
+        <p>Konu anlatımı veya test seç.</p>
+      </div>
+
+      <div className="row-list">
+
+        <button
+          onClick={() => {
+            setSelectedC1Topic("menu");
+          }}
+          className="row-btn"
+        >
+          <span>
+            <span className="row-title">Konu Anlatımları</span>
+            <span className="row-sub">
+              C1 gramer konularını detaylı öğren
+            </span>
+          </span>
+
+          <span className="row-arrow">→</span>
+        </button>
+
+        <button
+          onClick={() => loadDilQuestions("C1")}
+          className="row-btn"
+        >
+          <span>
+            <span className="row-title">C1 Testleri</span>
+            <span className="row-sub">
+              C1 seviyesinde kendini test et
+            </span>
+          </span>
+
+          <span className="row-arrow">→</span>
+        </button>
+
+      </div>
+    </div>
+  )}
+
+  {/* C1 KONU LİSTESİ */}
+{!isLoading &&
+  activeTab === 'dil' &&
+  selectedLevelOrTopic === 'C1' &&
+  selectedC1Topic === 'menu' &&(
+    <div>
+      <button
+        onClick={() => {
+          setSelectedC1Topic(null);
+        }}
+        className="back-link"
+      >
+        ← C1'e geri dön
+      </button>
+
+      <div className="section-head">
+        <h2>C1 Konu Anlatımları</h2>
+        <p>Konuyu öğren, örneklerle pekiştir.</p>
+      </div>
+
+      <div className="row-list">
+        {c1Topics.map((topic) => (
+          <button
+            key={topic}
+            onClick={() => loadC1Lesson(topic)}
+            className="row-btn"
+          >
+            <span>
+              <span className="row-title">{topic}</span>
+              <span className="row-sub">
+                Detaylı C1 konu anlatımı
+              </span>
+            </span>
+
+            <span className="row-arrow">→</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  )}
+
+  {/* C1 KONU ANLATIMI */}
+{!isLoading &&
+  activeTab === 'dil' &&
+  selectedLevelOrTopic === 'C1' &&
+  selectedC1Topic &&
+  selectedC1Topic !== 'menu' &&
+  c1Lesson && (
+    <div style={{ textAlign: 'left' }}>
+      <button
+        onClick={() => {
+          setSelectedC1Topic("menu");
+          setC1Lesson(null);
+        }}
+        className="back-link"
+      >
+        ← C1 konularına geri dön
+      </button>
+
+      <div className="note-card">
+
+        <h3>{c1Lesson.title}</h3>
+
+        {c1Lesson.intro && (
+          <div className="note-body">
+            {c1Lesson.intro}
+          </div>
+        )}
+
+        {Array.isArray(c1Lesson.sections) &&
+          c1Lesson.sections.map((section, index) => (
+            <div key={index} className="c1-lesson-section">
+
+              <h3>{section.title}</h3>
+
+              {section.explanation && (
+                <p>
+                  {section.explanation}
+                </p>
+              )}
+
+              {section.structure && (
+                <div className="c1-structure">
+                  <strong>Cümle yapısı</strong>
+                  <div>{section.structure}</div>
+                </div>
+              )}
+
+              {Array.isArray(section.examples) &&
+                section.examples.map((example, exampleIndex) => (
+                  <div
+                    key={exampleIndex}
+                    className="c1-example"
+                  >
+                    <strong>Örnek {exampleIndex + 1}</strong>
+
+                    <div>
+                      {example.german}
+                    </div>
+
+                    <div>
+                      {example.turkish}
+                    </div>
+                  </div>
+                ))}
+
+              {section.commonMistake && (
+                <div className="c1-mistake">
+                  <strong>Sık yapılan hata</strong>
+                  <div>
+                    {section.commonMistake}
+                  </div>
+                </div>
+              )}
+
+              {section.importantNote && (
+                <div className="c1-important">
+                  <strong>C1 notu</strong>
+                  <div>
+                    {section.importantNote}
+                  </div>
+                </div>
+              )}
+
+            </div>
+          ))}
+
+      </div>
+    </div>
+  )}
 
         {/* 2. MESLEKİ ALMANCA SEKMESİ */}
         {!isLoading && activeTab === 'mesleki' && !selectedPflegeTopic && (
