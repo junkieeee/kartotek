@@ -1,13 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { auth } from './firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import Auth from './Auth';
 import {
   fetchQuestionsFromOpenRouter,
   fetchAusbildungContentFromOpenRouter,
-  fetchPflegeQuestionsFromOpenRouter
+  fetchPflegeQuestionsFromOpenRouter,
+  fetchDilBatchForUnlimitedMode,
+  topUpDilPool,
+  topUpPflegePool
 } from './openrouter';
 import './App.css';
+
+const DIL_CATEGORY = "Almanca Dil Eğitimi";
 
 /* ---------- ikonlar (emoji değil, çizgi SVG) ---------- */
 
@@ -108,6 +113,46 @@ function recordAnswer(isCorrect) {
   return data;
 }
 
+/* ---------- sınav geçmişi (başarı oranı grafiği + not skalası için) ---------- */
+
+function loadExamHistory() {
+  try {
+    const raw = localStorage.getItem('kartotek_examHistory');
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveExamResult(entry) {
+  const history = loadExamHistory();
+  const next = [...history, entry].slice(-50);
+  localStorage.setItem('kartotek_examHistory', JSON.stringify(next));
+  return next;
+}
+
+const GRADE_SCALE = [
+  { min: 90, label: "A+", desc: "Mükemmel" },
+  { min: 80, label: "A", desc: "Çok İyi" },
+  { min: 70, label: "B", desc: "İyi" },
+  { min: 60, label: "C", desc: "Orta" },
+  { min: 50, label: "D", desc: "Zayıf" },
+  { min: 0, label: "F", desc: "Başarısız" },
+];
+
+function getGrade(percentage) {
+  return GRADE_SCALE.find(g => percentage >= g.min) || GRADE_SCALE[GRADE_SCALE.length - 1];
+}
+
+function shuffleArray(arr) {
+  const a = [...(arr || [])];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 const DAY_LABELS = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"];
 
 function last7Days(daily) {
@@ -145,18 +190,68 @@ function WeeklyChart({ daily }) {
   );
 }
 
+/* ---------- başarı oranı grafiği (son sınavlar, yüzde çizgisi) ---------- */
+
+function SuccessRateChart({ history }) {
+  const recent = history.slice(-10);
+
+  if (recent.length === 0) {
+    return <p className="empty-chart-note">Henüz tamamlanmış bir sınav yok. Bir test bitirdiğinde burada grafik olarak görünecek.</p>;
+  }
+
+  const w = 320, h = 110, padX = 16, padY = 14;
+  const stepX = recent.length > 1 ? (w - padX * 2) / (recent.length - 1) : 0;
+  const points = recent.map((r, i) => {
+    const x = padX + i * stepX;
+    const y = padY + (1 - r.percentage / 100) * (h - padY * 2);
+    return { x, y, entry: r };
+  });
+  const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+  const avg = Math.round(recent.reduce((s, r) => s + r.percentage, 0) / recent.length);
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${w} ${h}`} width="100%" style={{ maxWidth: 360, display: 'block', margin: '0 auto' }}>
+        <line x1={padX} y1={h - padY} x2={w - padX} y2={h - padY} stroke="var(--border)" strokeWidth="1" />
+        <line x1={padX} y1={padY} x2={padX} y2={h - padY} stroke="var(--border)" strokeWidth="1" />
+        <path d={pathD} fill="none" stroke="var(--primary)" strokeWidth="2" />
+        {points.map((p, i) => (
+          <circle key={i} cx={p.x} cy={p.y} r={3.6} fill={p.entry.percentage >= 50 ? "var(--success)" : "var(--danger)"} />
+        ))}
+      </svg>
+      <div className="chart-avg-note">
+        Son {recent.length} sınav ortalaması: <strong>%{avg}</strong>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
-    const [user, setUser] = useState(null);
+  const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [theme, setTheme] = useState(() => localStorage.getItem('kartotek_theme') || 'dark');
   const [language, setLanguage] = useState(() => localStorage.getItem('kartotek_lang') || 'tr');
   const [streak, setStreak] = useState(() => loadStreak());
   const [stats, setStats] = useState(() => loadStats());
+  const [examHistory, setExamHistory] = useState(() => loadExamHistory());
 
   const [activeTab, setActiveTab] = useState('home');
   const [questions, setQuestions] = useState([]);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [selectedAnswer, setSelectedAnswer] = useState(null);
+
+  const [dilMode, setDilMode] = useState('test'); // 'test' | 'unlimited'
+  const [isUnlimitedMode, setIsUnlimitedMode] = useState(false);
+  const [isFetchingMore, setIsFetchingMore] = useState(false);
+  const [quizCorrect, setQuizCorrect] = useState(0);
+  const [quizTotal, setQuizTotal] = useState(0);
+  const [showResult, setShowResult] = useState(false);
+  const [resultData, setResultData] = useState(null);
+
+  // cümle kurma egzersizi için
+  const [sentenceWords, setSentenceWords] = useState([]);
+  const [sentenceAnswer, setSentenceAnswer] = useState([]);
+  const [sentenceChecked, setSentenceChecked] = useState(false);
 
   const [selectedLevelOrTopic, setSelectedLevelOrTopic] = useState(null);
   const [selectedPflegeTopic, setSelectedPflegeTopic] = useState(null);
@@ -168,14 +263,16 @@ export default function App() {
   const [loadingLabel, setLoadingLabel] = useState("Sorular hazırlanıyor...");
   const [error, setError] = useState("");
 
-  useEffect(() => {
-  const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-    setUser(currentUser);
-    setAuthLoading(false);
-  });
+  const backgroundStarted = useRef(false);
 
-  return unsubscribe;
-}, []);
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setAuthLoading(false);
+    });
+
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('kartotek_theme', theme);
@@ -218,19 +315,78 @@ export default function App() {
     ]
   };
 
-  const loadDilQuestions = async (levelOrTopic) => {
+  // Uygulama açıldığında (kullanıcı giriş yaptıktan sonra), her kur ve her mesleki
+  // konu için AI'ın arka planda soru havuzunu büyütmesini sırayla tetikler.
+  // Kullanıcıyı bekletmez; API'yi boğmamak için aralara bekleme koyar.
+  useEffect(() => {
+    if (!user || backgroundStarted.current) return;
+    backgroundStarted.current = true;
+    let cancelled = false;
+
+    (async () => {
+      for (const lvl of dilCategories) {
+        if (cancelled) return;
+        try { await topUpDilPool(DIL_CATEGORY, lvl, 25); } catch (e) { console.warn("Arka plan dil üretimi başarısız:", e); }
+        await new Promise(res => setTimeout(res, 8000));
+      }
+      for (const top of pflegeTopics) {
+        if (cancelled) return;
+        try { await topUpPflegePool(top, 25); } catch (e) { console.warn("Arka plan mesleki üretim başarısız:", e); }
+        await new Promise(res => setTimeout(res, 8000));
+      }
+    })();
+
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  // Sınırsız pratik modunda, kullanıcı yüklenen sorunun sonuna yaklaşınca
+  // arka planda bir sonraki paketi getirir (havuz gerekirse büyütülür).
+  useEffect(() => {
+    if (!isUnlimitedMode || questions.length === 0 || isFetchingMore) return;
+    if (currentQuestionIndex >= questions.length - 3) {
+      setIsFetchingMore(true);
+      fetchDilBatchForUnlimitedMode(DIL_CATEGORY, selectedLevelOrTopic, questions.length, 10)
+        .then((more) => {
+          if (more?.length) setQuestions(prev => [...prev, ...more]);
+        })
+        .catch((err) => console.warn("Ek soru yüklenemedi:", err))
+        .finally(() => setIsFetchingMore(false));
+    }
+  }, [currentQuestionIndex, isUnlimitedMode, questions.length, selectedLevelOrTopic, isFetchingMore]);
+
+  // Aktif soru "cümle kurma" tipindeyse kelime çiplerini hazırla
+  useEffect(() => {
+    const q = questions[currentQuestionIndex];
+    if (q?.type === 'sentence_order') {
+      setSentenceWords(shuffleArray(q.words));
+      setSentenceAnswer([]);
+      setSentenceChecked(false);
+    }
+  }, [currentQuestionIndex, questions]);
+
+  const loadDilQuestions = async (levelOrTopic, unlimited = false) => {
     setSelectedLevelOrTopic(levelOrTopic);
+    setIsUnlimitedMode(unlimited);
     setIsLoading(true);
     setLoadingLabel("Sorular hazırlanıyor...");
     setError("");
     setQuestions([]);
     setCurrentQuestionIndex(0);
     setSelectedAnswer(null);
+    setQuizCorrect(0);
+    setQuizTotal(0);
+    setShowResult(false);
+    setResultData(null);
 
     try {
-      const generated = await fetchQuestionsFromOpenRouter("Almanca Dil Eğitimi", levelOrTopic, 10);
+      const generated = unlimited
+        ? await fetchDilBatchForUnlimitedMode(DIL_CATEGORY, levelOrTopic, 0, 10)
+        : await fetchQuestionsFromOpenRouter(DIL_CATEGORY, levelOrTopic, 10);
       setQuestions(generated);
       setStreak(recordStudyToday());
+      // bu kur için havuzu arka planda büyütmeye devam et
+      topUpDilPool(DIL_CATEGORY, levelOrTopic, 40).catch(() => {});
     } catch (err) {
       setError("Sorular yüklenirken hata oluştu: " + err.message);
     } finally {
@@ -240,17 +396,23 @@ export default function App() {
 
   const loadPflegeQuestions = async (topic) => {
     setSelectedPflegeTopic(topic);
+    setIsUnlimitedMode(false);
     setIsLoading(true);
     setLoadingLabel("Sorular hazırlanıyor...");
     setError("");
     setQuestions([]);
     setCurrentQuestionIndex(0);
     setSelectedAnswer(null);
+    setQuizCorrect(0);
+    setQuizTotal(0);
+    setShowResult(false);
+    setResultData(null);
 
     try {
       const generated = await fetchPflegeQuestionsFromOpenRouter(topic, 10);
       setQuestions(generated);
       setStreak(recordStudyToday());
+      topUpPflegePool(topic, 40).catch(() => {});
     } catch (err) {
       setError("Mesleki sorular yüklenirken hata oluştu: " + err.message);
     } finally {
@@ -284,25 +446,105 @@ export default function App() {
     setSelectedSubTopic(null);
     setAusbildungContent("");
     setQuestions([]);
+    setCurrentQuestionIndex(0);
+    setSelectedAnswer(null);
+    setQuizCorrect(0);
+    setQuizTotal(0);
+    setShowResult(false);
+    setResultData(null);
+    setIsUnlimitedMode(false);
+    setSentenceAnswer([]);
+    setSentenceWords([]);
+    setSentenceChecked(false);
   };
 
   const goTo = (tab) => { setActiveTab(tab); resetNav(); };
 
-const handleLogout = async () => {
-  try {
-    await signOut(auth);
-  } catch (error) {
-    console.error("Çıkış yapılamadı:", error);
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error("Çıkış yapılamadı:", error);
+    }
+  };
+
+  const currentQ = questions[currentQuestionIndex];
+
+  const isSentenceCorrect =
+    currentQ?.type === 'sentence_order' && sentenceChecked &&
+    sentenceAnswer.join(' ').trim().toLowerCase() === (currentQ.correctSentence || '').trim().toLowerCase();
+
+  const answered = currentQ?.type === 'sentence_order' ? sentenceChecked : selectedAnswer !== null;
+
+  const handleChoiceAnswer = (idx) => {
+    const isCorrect = idx === currentQ.correctIndex;
+    setSelectedAnswer(idx);
+    setStats(recordAnswer(isCorrect));
+    setQuizTotal(t => t + 1);
+    setQuizCorrect(c => (isCorrect ? c + 1 : c));
+  };
+
+  const pickWord = (word, idx) => {
+    if (sentenceChecked) return;
+    setSentenceAnswer(prev => [...prev, word]);
+    setSentenceWords(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  const undoWord = () => {
+    if (sentenceChecked || sentenceAnswer.length === 0) return;
+    const last = sentenceAnswer[sentenceAnswer.length - 1];
+    setSentenceAnswer(prev => prev.slice(0, -1));
+    setSentenceWords(prev => [...prev, last]);
+  };
+
+  const checkSentenceOrder = () => {
+    const built = sentenceAnswer.join(' ').trim().toLowerCase();
+    const correct = (currentQ.correctSentence || '').trim().toLowerCase();
+    const isCorrect = built === correct;
+    setSentenceChecked(true);
+    setStats(recordAnswer(isCorrect));
+    setQuizTotal(t => t + 1);
+    setQuizCorrect(c => (isCorrect ? c + 1 : c));
+  };
+
+  const finishQuiz = () => {
+    const total = quizTotal;
+    const correct = quizCorrect;
+    const percentage = total > 0 ? Math.round((correct / total) * 1000) / 10 : 0;
+    const grade = getGrade(percentage);
+    const entry = {
+      id: Date.now(),
+      date: todayStr(),
+      category: selectedPflegeTopic ? 'mesleki' : 'dil',
+      levelOrTopic: selectedPflegeTopic || selectedLevelOrTopic,
+      correct,
+      total,
+      percentage,
+      gradeLabel: grade.label,
+      gradeDesc: grade.desc
+    };
+    setExamHistory(saveExamResult(entry));
+    setResultData(entry);
+    setShowResult(true);
+  };
+
+  const goNextQuestion = () => {
+    const isLast = currentQuestionIndex >= questions.length - 1;
+    if (isUnlimitedMode || !isLast) {
+      setCurrentQuestionIndex(prev => prev + 1);
+      setSelectedAnswer(null);
+    } else {
+      finishQuiz();
+    }
+  };
+
+  if (authLoading) {
+    return null;
   }
-};
 
-if (authLoading) {
-  return null;
-}
-
-if (!user) {
-  return <Auth />;
-}
+  if (!user) {
+    return <Auth />;
+  }
 
   return (
     <div className="app-shell" data-theme={theme}>
@@ -342,14 +584,19 @@ if (!user) {
                 <div className="stat-label">toplam soru</div>
               </div>
               <div className="stat-tile">
-                <div className="stat-num">{stats.correct}</div>
-                <div className="stat-label">doğru cevap</div>
+                <div className="stat-num">{stats.total > 0 ? Math.round((stats.correct / stats.total) * 100) : 0}%</div>
+                <div className="stat-label">genel başarı</div>
               </div>
             </div>
 
             <div className="chart-card">
               <div className="chart-title">Son 7 gün</div>
               <WeeklyChart daily={stats.daily} />
+            </div>
+
+            <div className="chart-card">
+              <div className="chart-title">Başarı Oranı (son sınavlar)</div>
+              <SuccessRateChart history={examHistory} />
             </div>
 
             <div className="section-head"><h2>Bugün ne çalışalım?</h2></div>
@@ -379,12 +626,24 @@ if (!user) {
               <h2>Almanca Dil Eğitimi</h2>
               <p>Seviyeni seç, testle çalış.</p>
             </div>
+            <div className="segmented dil-mode-toggle">
+              <button className={dilMode === 'test' ? 'active' : ''} onClick={() => setDilMode('test')}>
+                10 Soruluk Test
+              </button>
+              <button className={dilMode === 'unlimited' ? 'active' : ''} onClick={() => setDilMode('unlimited')}>
+                ♾️ Sınırsız Pratik
+              </button>
+            </div>
             <div className="row-list">
               {dilCategories.map((lvl) => (
-                <button key={lvl} onClick={() => loadDilQuestions(lvl)} className="row-btn">
+                <button key={lvl} onClick={() => loadDilQuestions(lvl, dilMode === 'unlimited')} className="row-btn">
                   <span>
                     <span className="row-title">{lvl}</span>
-                    <span className="row-sub">Gramer ve dil testi</span>
+                    <span className="row-sub">
+                      {dilMode === 'unlimited'
+                        ? 'Sınırsız — çoktan seçmeli, boşluk doldurma, cümle kurma karışık'
+                        : 'Gramer ve dil testi'}
+                    </span>
                   </span>
                   <span className="row-arrow">→</span>
                 </button>
@@ -411,60 +670,134 @@ if (!user) {
           </div>
         )}
 
-        {/* ORTAK SORU EKRANI */}
-        {!isLoading && (selectedLevelOrTopic || selectedPflegeTopic) && questions.length > 0 && (
+        {/* ORTAK SORU EKRANI (çoktan seçmeli / boşluk doldurma / cümle kurma) */}
+        {!isLoading && !showResult && (selectedLevelOrTopic || selectedPflegeTopic) && questions.length > 0 && currentQ && (
           <div>
             <button onClick={resetNav} className="back-link">← Kategorilere geri dön</button>
             <div className="question-card">
-              <span className="q-progress">SORU {currentQuestionIndex + 1} / {questions.length}</span>
-              <h3 className="q-title">{questions[currentQuestionIndex].question}</h3>
-
-              <div className="options-list">
-                {questions[currentQuestionIndex].options.map((opt, idx) => {
-                  let cls = "option-btn";
-                  if (selectedAnswer !== null) {
-                    if (idx === questions[currentQuestionIndex].correctIndex) cls += " correct";
-                    else if (idx === selectedAnswer) cls += " incorrect";
-                  }
-                  return (
-                    <button
-                      key={idx}
-                      disabled={selectedAnswer !== null}
-                      onClick={() => {
-                        setSelectedAnswer(idx);
-                        setStats(recordAnswer(idx === questions[currentQuestionIndex].correctIndex));
-                      }}
-                      className={cls}
-                    >
-                      {opt}
-                    </button>
-                  );
-                })}
+              <div className="q-topbar">
+                <span className="q-progress">
+                  {isUnlimitedMode ? `SORU ${currentQuestionIndex + 1} · Sınırsız` : `SORU ${currentQuestionIndex + 1} / ${questions.length}`}
+                </span>
+                <span className="q-live-score">{quizCorrect}/{quizTotal} doğru</span>
               </div>
 
-              {selectedAnswer !== null && (
-                <div className="explanation-box">
-                  <strong>Açıklama</strong>
-                  {questions[currentQuestionIndex].explanation}
+              {currentQ.type === 'fill_blank' && (
+                <h3 className="q-title">{(currentQ.sentence || '').replace('___', '▁▁▁▁')}</h3>
+              )}
+              {(currentQ.type === 'multiple_choice' || !currentQ.type) && (
+                <h3 className="q-title">{currentQ.question}</h3>
+              )}
+
+              {(currentQ.type === 'multiple_choice' || currentQ.type === 'fill_blank' || !currentQ.type) && (
+                <div className="options-list">
+                  {currentQ.options.map((opt, idx) => {
+                    let cls = "option-btn";
+                    if (selectedAnswer !== null) {
+                      if (idx === currentQ.correctIndex) cls += " correct";
+                      else if (idx === selectedAnswer) cls += " incorrect";
+                    }
+                    return (
+                      <button
+                        key={idx}
+                        disabled={selectedAnswer !== null}
+                        onClick={() => handleChoiceAnswer(idx)}
+                        className={cls}
+                      >
+                        {opt}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
 
-              {selectedAnswer !== null && (
+              {currentQ.type === 'sentence_order' && (
+                <div className="sentence-order">
+                  <p className="q-title sentence-instruction">Kelimeleri doğru sırada dizerek cümleyi kur:</p>
+                  <div className="sentence-answer-row">
+                    {sentenceAnswer.length === 0 && (
+                      <span className="sentence-placeholder">Kelimelere dokunarak başla…</span>
+                    )}
+                    {sentenceAnswer.map((w, i) => (
+                      <span
+                        key={i}
+                        className={`word-chip picked${sentenceChecked ? (isSentenceCorrect ? ' correct' : ' incorrect') : ''}`}
+                      >
+                        {w}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="word-bank">
+                    {sentenceWords.map((w, i) => (
+                      <button key={i} className="word-chip" disabled={sentenceChecked} onClick={() => pickWord(w, i)}>
+                        {w}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="sentence-actions">
+                    <button className="ghost-btn" disabled={sentenceChecked || sentenceAnswer.length === 0} onClick={undoWord}>
+                      ← Geri al
+                    </button>
+                    <button className="primary-btn" disabled={sentenceChecked || sentenceAnswer.length === 0} onClick={checkSentenceOrder}>
+                      Kontrol Et
+                    </button>
+                  </div>
+                  {sentenceChecked && !isSentenceCorrect && (
+                    <p className="correct-answer-hint">Doğru cümle: <strong>{currentQ.correctSentence}</strong></p>
+                  )}
+                </div>
+              )}
+
+              {answered && (
+                <div className="explanation-box">
+                  <strong>Açıklama</strong>
+                  {currentQ.explanation}
+                </div>
+              )}
+
+              {answered && (
+                <div className="quiz-nav-actions">
+                  <button onClick={goNextQuestion} className="primary-btn">
+                    {isUnlimitedMode
+                      ? 'Sonraki soru →'
+                      : (currentQuestionIndex < questions.length - 1 ? 'Sonraki soru →' : 'Testi Bitir ve Sonucu Gör')}
+                  </button>
+                  {isUnlimitedMode && (
+                    <button onClick={finishQuiz} className="ghost-btn">Testi Bitir</button>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* SINAV SONUCU / NOT SKALASI */}
+        {!isLoading && showResult && resultData && (
+          <div>
+            <div className="result-card">
+              <div className={`result-grade grade-${resultData.gradeLabel.replace('+', 'plus')}`}>
+                {resultData.gradeLabel}
+              </div>
+              <h2 className="result-title">{resultData.gradeDesc}</h2>
+              <p className="result-sub">{resultData.levelOrTopic}</p>
+              <div className="result-score">
+                %{resultData.percentage} · {resultData.correct}/{resultData.total} doğru
+              </div>
+              <div className="result-actions">
                 <button
+                  className="primary-btn"
                   onClick={() => {
-                    if (currentQuestionIndex < questions.length - 1) {
-                      setCurrentQuestionIndex(prev => prev + 1);
-                      setSelectedAnswer(null);
+                    if (resultData.category === 'mesleki') {
+                      loadPflegeQuestions(resultData.levelOrTopic);
                     } else {
-                      alert("Tebrikler, test bitti!");
-                      resetNav();
+                      loadDilQuestions(resultData.levelOrTopic, isUnlimitedMode);
                     }
                   }}
-                  className="primary-btn"
                 >
-                  Sonraki soru →
+                  Tekrar Dene
                 </button>
-              )}
+                <button className="ghost-btn" onClick={resetNav}>Kategorilere Dön</button>
+              </div>
             </div>
           </div>
         )}
