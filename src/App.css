@@ -587,6 +587,74 @@ body {
 }
 .result-actions .primary-btn { margin-top: 0; }
 
+/* ---------- Konu anlatımı bölümleri (A1–C1 "Konu Anlatımları") ---------- */
+
+.lesson-section {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--paper-line);
+}
+.lesson-section h3 {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 10px;
+  text-align: left;
+}
+.lesson-section p {
+  font-size: 14px;
+  line-height: 1.7;
+  margin: 0 0 12px;
+}
+
+.lesson-structure {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  background: rgba(36, 33, 27, 0.05);
+  border-radius: 8px;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.lesson-structure strong,
+.lesson-example strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 4px;
+  opacity: 0.65;
+}
+
+.lesson-example {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  background: rgba(36, 33, 27, 0.04);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+.lesson-mistake,
+.lesson-important {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.lesson-mistake strong,
+.lesson-important strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 4px;
+}
+.lesson-mistake { background: var(--danger-bg); border-left: 3px solid var(--danger); }
+.lesson-important { background: var(--success-bg); border-left: 3px solid var(--success); }
+
 /* ---------- Başarı grafiği yardımcı metinleri ---------- */
 
 .empty-chart-note {

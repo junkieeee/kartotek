@@ -6,7 +6,7 @@ import {
   fetchQuestionsFromOpenRouter,
   fetchAusbildungContentFromOpenRouter,
   fetchPflegeQuestionsFromOpenRouter,
-  fetchC1LessonFromOpenRouter,
+  fetchLevelLessonFromOpenRouter,
   fetchDilBatchForUnlimitedMode,
   topUpDilPool,
   topUpPflegePool
@@ -258,8 +258,8 @@ export default function App() {
   const [selectedPflegeTopic, setSelectedPflegeTopic] = useState(null);
   const [selectedMainCategory, setSelectedMainCategory] = useState(null);
   const [selectedSubTopic, setSelectedSubTopic] = useState(null);
-  const [selectedC1Topic, setSelectedC1Topic] = useState(null);
-  const [c1Lesson, setC1Lesson] = useState(null);
+  const [selectedLessonTopic, setSelectedLessonTopic] = useState(null);
+  const [lessonContent, setLessonContent] = useState(null);
 
   const [ausbildungContent, setAusbildungContent] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -267,6 +267,10 @@ export default function App() {
   const [error, setError] = useState("");
 
   const backgroundStarted = useRef(false);
+  // Sınırsız pratikte arka planda getirilen soru paketlerinin, kullanıcı
+  // başka bir yere geçtikten SONRA gelip listeye eklenmesini (eski sorunların
+  // altta "takılı" kalmasını) engellemek için basit bir oturum sayacı.
+  const sessionIdRef = useRef(0);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -286,14 +290,59 @@ export default function App() {
   }, [language]);
 
   const dilCategories = ["A1", "A2", "B1", "B2","C1", "Gramer Pratiği"];
-  const c1Topics = [
-  "Konnektoren / Bağlaçlar",
-  "Konjunktiv II",
-  "Konjunktiv I",
-  "Passiv & Passiversatzformen",
-  "Partizipialkonstruktionen",
-  "Nominalisierung"
-];
+
+  // Seviyeye göre "Konu Anlatımı" başlıkları. "Gramer Pratiği" zaten karışık
+  // bir tekrar modu olduğu için ayrı bir konu listesi yok — direkt teste gider.
+  const levelTopics = {
+    "A1": [
+      "Artikel: der, die, das",
+      "Personalpronomen",
+      "Präsens (Şimdiki Zaman)",
+      "Akkusativ",
+      "Possessivpronomen",
+      "Modalverben (Grundlagen)",
+      "Perfekt (Grundlagen)",
+      "Trennbare Verben",
+      "W-Fragen ve Ja/Nein Fragen",
+      "Negation: nicht / kein"
+    ],
+    "A2": [
+      "Präteritum: sein, haben, Modalverben",
+      "Dativ",
+      "Wechselpräpositionen",
+      "Komparativ ve Superlativ",
+      "Adjektivdeklination (Grundlagen)",
+      "Nebensätze: weil, dass, wenn",
+      "Reflexive Verben",
+      "Imperativ"
+    ],
+    "B1": [
+      "Relativsätze",
+      "Konjunktiv II (Grundlagen)",
+      "Passiv (Grundlagen)",
+      "Genitiv",
+      "Temporale Nebensätze: als, wenn, während",
+      "Infinitiv mit zu",
+      "Indirekte Fragesätze"
+    ],
+    "B2": [
+      "Konjunktiv I (Berichte / Referate)",
+      "Partizipialkonstruktionen (Grundlagen)",
+      "Nominalstil",
+      "Doppelkonnektoren",
+      "Modalpartikeln",
+      "Kausale, konzessive ve konditionale Nebensätze"
+    ],
+    "C1": [
+      "Konnektoren / Bağlaçlar",
+      "Konjunktiv II",
+      "Konjunktiv I",
+      "Passiv & Passiversatzformen",
+      "Partizipialkonstruktionen",
+      "Nominalisierung"
+    ]
+  };
+  const LEVELS_WITH_LESSONS = ["A1", "A2", "B1", "B2", "C1"];
   const pflegeTopics = [
     "Hasta İletişimi ve Mülakat",
     "Vital Bulgular (Tansiyon, Nabız, Ateş)",
@@ -355,13 +404,19 @@ export default function App() {
   useEffect(() => {
     if (!isUnlimitedMode || questions.length === 0 || isFetchingMore) return;
     if (currentQuestionIndex >= questions.length - 3) {
+      const sessionAtStart = sessionIdRef.current;
       setIsFetchingMore(true);
       fetchDilBatchForUnlimitedMode(DIL_CATEGORY, selectedLevelOrTopic, questions.length, 10)
         .then((more) => {
+          // Kullanıcı bu sırada geri döndüyse ya da başka bir seviyeye geçtiyse,
+          // gecikmiş bu sonucu görmezden gel — yoksa eski sorular "altta" listeye eklenip kalır.
+          if (sessionIdRef.current !== sessionAtStart) return;
           if (more?.length) setQuestions(prev => [...prev, ...more]);
         })
         .catch((err) => console.warn("Ek soru yüklenemedi:", err))
-        .finally(() => setIsFetchingMore(false));
+        .finally(() => {
+          if (sessionIdRef.current === sessionAtStart) setIsFetchingMore(false);
+        });
     }
   }, [currentQuestionIndex, isUnlimitedMode, questions.length, selectedLevelOrTopic, isFetchingMore]);
 
@@ -376,6 +431,7 @@ export default function App() {
   }, [currentQuestionIndex, questions]);
 
   const loadDilQuestions = async (levelOrTopic, unlimited = false) => {
+    sessionIdRef.current += 1;
     setSelectedLevelOrTopic(levelOrTopic);
     setIsUnlimitedMode(unlimited);
     setIsLoading(true);
@@ -389,43 +445,46 @@ export default function App() {
     setShowResult(false);
     setResultData(null);
 
+    const sessionAtStart = sessionIdRef.current;
     try {
       const generated = unlimited
         ? await fetchDilBatchForUnlimitedMode(DIL_CATEGORY, levelOrTopic, 0, 10)
         : await fetchQuestionsFromOpenRouter(DIL_CATEGORY, levelOrTopic, 10);
+      if (sessionIdRef.current !== sessionAtStart) return; // kullanıcı bu arada başka bir yere geçti
       setQuestions(generated);
       setStreak(recordStudyToday());
       // bu kur için havuzu arka planda büyütmeye devam et
       topUpDilPool(DIL_CATEGORY, levelOrTopic, 40).catch(() => {});
     } catch (err) {
-      setError("Sorular yüklenirken hata oluştu: " + err.message);
+      if (sessionIdRef.current === sessionAtStart) setError("Sorular yüklenirken hata oluştu: " + err.message);
+    } finally {
+      if (sessionIdRef.current === sessionAtStart) setIsLoading(false);
+    }
+  };
+
+  const loadLevelLesson = async (level, topic) => {
+    setSelectedLessonTopic(topic);
+    setIsLoading(true);
+    setLoadingLabel(`${level} konu anlatımı hazırlanıyor...`);
+    setError("");
+    setLessonContent(null);
+
+    try {
+      const lesson = await fetchLevelLessonFromOpenRouter(level, topic);
+
+      setLessonContent(lesson);
+      setStreak(recordStudyToday());
+    } catch (err) {
+      setError(
+        "Konu anlatımı yüklenirken hata oluştu: " + err.message
+      );
     } finally {
       setIsLoading(false);
     }
   };
 
-  const loadC1Lesson = async (topic) => {
-  setSelectedC1Topic(topic);
-  setIsLoading(true);
-  setLoadingLabel("C1 konu anlatımı hazırlanıyor...");
-  setError("");
-  setC1Lesson(null);
-
-  try {
-    const lesson = await fetchC1LessonFromOpenRouter(topic);
-
-    setC1Lesson(lesson);
-    setStreak(recordStudyToday());
-  } catch (err) {
-    setError(
-      "C1 konu anlatımı yüklenirken hata oluştu: " + err.message
-    );
-  } finally {
-    setIsLoading(false);
-  }
-};
-
   const loadPflegeQuestions = async (topic) => {
+    sessionIdRef.current += 1;
     setSelectedPflegeTopic(topic);
     setIsUnlimitedMode(false);
     setIsLoading(true);
@@ -439,15 +498,17 @@ export default function App() {
     setShowResult(false);
     setResultData(null);
 
+    const sessionAtStart = sessionIdRef.current;
     try {
       const generated = await fetchPflegeQuestionsFromOpenRouter(topic, 10);
+      if (sessionIdRef.current !== sessionAtStart) return;
       setQuestions(generated);
       setStreak(recordStudyToday());
       topUpPflegePool(topic, 40).catch(() => {});
     } catch (err) {
-      setError("Mesleki sorular yüklenirken hata oluştu: " + err.message);
+      if (sessionIdRef.current === sessionAtStart) setError("Mesleki sorular yüklenirken hata oluştu: " + err.message);
     } finally {
-      setIsLoading(false);
+      if (sessionIdRef.current === sessionAtStart) setIsLoading(false);
     }
   };
 
@@ -471,12 +532,13 @@ export default function App() {
   };
 
   const resetNav = () => {
+    sessionIdRef.current += 1;
     setSelectedLevelOrTopic(null);
     setSelectedPflegeTopic(null);
     setSelectedMainCategory(null);
     setSelectedSubTopic(null);
-    setSelectedC1Topic(null);
-    setC1Lesson(null);
+    setSelectedLessonTopic(null);
+    setLessonContent(null);
     setAusbildungContent("");
     setQuestions([]);
     setCurrentQuestionIndex(0);
@@ -653,7 +715,7 @@ export default function App() {
         )}
 
         {/* 1. DİL SEKMESİ */}
-        {!isLoading && activeTab === 'dil' && !selectedLevelOrTopic && !selectedC1Topic && (
+        {!isLoading && activeTab === 'dil' && !selectedLevelOrTopic && !selectedLessonTopic && (
           <div>
             <div className="section-head">
               <h2>Almanca Dil Eğitimi</h2>
@@ -671,14 +733,16 @@ export default function App() {
               {dilCategories.map((lvl) => (
                 <button
                   key={lvl}
+                  className="row-btn"
                   onClick={() => {
-                    if (lvl === 'C1') {
-                      setSelectedLevelOrTopic('C1');
-                      setSelectedC1Topic(null);
-                      setC1Lesson(null);
+                    if (LEVELS_WITH_LESSONS.includes(lvl)) {
+                      sessionIdRef.current += 1;
+                      setSelectedLevelOrTopic(lvl);
+                      setSelectedLessonTopic(null);
+                      setLessonContent(null);
                       setQuestions([]);
                     } else {
-                      loadDilQuestions(lvl);
+                      loadDilQuestions(lvl, dilMode === 'unlimited');
                     }
                   }}
                 >
@@ -697,18 +761,18 @@ export default function App() {
           </div>
         )}
 
-        {/* C1 ANA MENÜ */}
+        {/* SEVİYE ANA MENÜ (A1–C1: Konu Anlatımı veya Test seç) */}
 {!isLoading &&
   activeTab === 'dil' &&
-  selectedLevelOrTopic === 'C1' &&
-  !selectedC1Topic && (
+  LEVELS_WITH_LESSONS.includes(selectedLevelOrTopic) &&
+  !selectedLessonTopic && (
     <div>
       <button onClick={resetNav} className="back-link">
         ← Dil seviyelerine geri dön
       </button>
 
       <div className="section-head">
-        <h2>C1 Almanca</h2>
+        <h2>{selectedLevelOrTopic} Almanca</h2>
         <p>Konu anlatımı veya test seç.</p>
       </div>
 
@@ -716,14 +780,14 @@ export default function App() {
 
         <button
           onClick={() => {
-            setSelectedC1Topic("menu");
+            setSelectedLessonTopic("menu");
           }}
           className="row-btn"
         >
           <span>
             <span className="row-title">Konu Anlatımları</span>
             <span className="row-sub">
-              C1 gramer konularını detaylı öğren
+              {selectedLevelOrTopic} gramer konularını detaylı öğren
             </span>
           </span>
 
@@ -731,13 +795,13 @@ export default function App() {
         </button>
 
         <button
-          onClick={() => loadDilQuestions("C1")}
+          onClick={() => loadDilQuestions(selectedLevelOrTopic, dilMode === 'unlimited')}
           className="row-btn"
         >
           <span>
-            <span className="row-title">C1 Testleri</span>
+            <span className="row-title">{selectedLevelOrTopic} Testleri</span>
             <span className="row-sub">
-              C1 seviyesinde kendini test et
+              {selectedLevelOrTopic} seviyesinde kendini test et
             </span>
           </span>
 
@@ -748,37 +812,37 @@ export default function App() {
     </div>
   )}
 
-  {/* C1 KONU LİSTESİ */}
+  {/* SEVİYE KONU LİSTESİ */}
 {!isLoading &&
   activeTab === 'dil' &&
-  selectedLevelOrTopic === 'C1' &&
-  selectedC1Topic === 'menu' &&(
+  LEVELS_WITH_LESSONS.includes(selectedLevelOrTopic) &&
+  selectedLessonTopic === 'menu' &&(
     <div>
       <button
         onClick={() => {
-          setSelectedC1Topic(null);
+          setSelectedLessonTopic(null);
         }}
         className="back-link"
       >
-        ← C1'e geri dön
+        ← {selectedLevelOrTopic}'e geri dön
       </button>
 
       <div className="section-head">
-        <h2>C1 Konu Anlatımları</h2>
+        <h2>{selectedLevelOrTopic} Konu Anlatımları</h2>
         <p>Konuyu öğren, örneklerle pekiştir.</p>
       </div>
 
       <div className="row-list">
-        {c1Topics.map((topic) => (
+        {(levelTopics[selectedLevelOrTopic] || []).map((topic) => (
           <button
             key={topic}
-            onClick={() => loadC1Lesson(topic)}
+            onClick={() => loadLevelLesson(selectedLevelOrTopic, topic)}
             className="row-btn"
           >
             <span>
               <span className="row-title">{topic}</span>
               <span className="row-sub">
-                Detaylı C1 konu anlatımı
+                Detaylı {selectedLevelOrTopic} konu anlatımı
               </span>
             </span>
 
@@ -789,37 +853,37 @@ export default function App() {
     </div>
   )}
 
-  {/* C1 KONU ANLATIMI */}
+  {/* SEVİYE KONU ANLATIMI */}
 {!isLoading &&
   activeTab === 'dil' &&
-  selectedLevelOrTopic === 'C1' &&
-  selectedC1Topic &&
-  selectedC1Topic !== 'menu' &&
-  c1Lesson && (
+  LEVELS_WITH_LESSONS.includes(selectedLevelOrTopic) &&
+  selectedLessonTopic &&
+  selectedLessonTopic !== 'menu' &&
+  lessonContent && (
     <div style={{ textAlign: 'left' }}>
       <button
         onClick={() => {
-          setSelectedC1Topic("menu");
-          setC1Lesson(null);
+          setSelectedLessonTopic("menu");
+          setLessonContent(null);
         }}
         className="back-link"
       >
-        ← C1 konularına geri dön
+        ← {selectedLevelOrTopic} konularına geri dön
       </button>
 
       <div className="note-card">
 
-        <h3>{c1Lesson.title}</h3>
+        <h3>{lessonContent.title}</h3>
 
-        {c1Lesson.intro && (
+        {lessonContent.intro && (
           <div className="note-body">
-            {c1Lesson.intro}
+            {lessonContent.intro}
           </div>
         )}
 
-        {Array.isArray(c1Lesson.sections) &&
-          c1Lesson.sections.map((section, index) => (
-            <div key={index} className="c1-lesson-section">
+        {Array.isArray(lessonContent.sections) &&
+          lessonContent.sections.map((section, index) => (
+            <div key={index} className="lesson-section">
 
               <h3>{section.title}</h3>
 
@@ -830,7 +894,7 @@ export default function App() {
               )}
 
               {section.structure && (
-                <div className="c1-structure">
+                <div className="lesson-structure">
                   <strong>Cümle yapısı</strong>
                   <div>{section.structure}</div>
                 </div>
@@ -840,7 +904,7 @@ export default function App() {
                 section.examples.map((example, exampleIndex) => (
                   <div
                     key={exampleIndex}
-                    className="c1-example"
+                    className="lesson-example"
                   >
                     <strong>Örnek {exampleIndex + 1}</strong>
 
@@ -855,7 +919,7 @@ export default function App() {
                 ))}
 
               {section.commonMistake && (
-                <div className="c1-mistake">
+                <div className="lesson-mistake">
                   <strong>Sık yapılan hata</strong>
                   <div>
                     {section.commonMistake}
@@ -864,8 +928,8 @@ export default function App() {
               )}
 
               {section.importantNote && (
-                <div className="c1-important">
-                  <strong>C1 notu</strong>
+                <div className="lesson-important">
+                  <strong>{selectedLevelOrTopic} notu</strong>
                   <div>
                     {section.importantNote}
                   </div>

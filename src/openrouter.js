@@ -296,22 +296,33 @@ Lütfen yanıtını doğrudan düzgün yapılandırılmış metin olarak ver.`;
 }
 
 /* =========================================================================
-   4. C1 KONU ANLATIMLARI (DERS MÜFREDATI)
+   4. KONU ANLATIMLARI (TÜM SEVİYELER İÇİN DERS MÜFREDATI)
    ========================================================================= */
 
-export async function fetchC1LessonFromOpenRouter(topic) {
-  const docId = safeId(`C1_${topic}`);
+const LEVEL_DEPTH_HINT = {
+  "A1": "Çok basit, günlük hayattan kısa cümleler kullan. Karmaşık terim kullanma, her şeyi en temelden anlat.",
+  "A2": "Basit ve net günlük örnekler kullan. Temel kuralları adım adım, sade bir dille anlat.",
+  "B1": "Orta düzey örnekler kullan. Kuralları detaylı ama hâlâ anlaşılır bir dille anlat, ileri düzey istisnalara çok girme.",
+  "B2": "Orta-ileri düzey, biraz daha akademik örnekler kullan. İnce ayrımlara ve istisnalara da değin.",
+  "C1": "Akademik ve ileri düzey Almanca kullan. İnce ayrımlara, istisnalara ve stilistik farklara detaylıca gir."
+};
 
-  const cached = await getPooledData("c1Lessons", docId);
+export async function fetchLevelLessonFromOpenRouter(level, topic) {
+  const docId = safeId(`${level}_${topic}`);
+
+  const cached = await getPooledData("levelLessons", docId);
   if (cached?.lesson) {
     return cached.lesson;
   }
 
+  const depthHint = LEVEL_DEPTH_HINT[level] || LEVEL_DEPTH_HINT["B1"];
+
   const prompt = `
-Sen Goethe-Institut C1 ve telc C1 sınavlarına hazırlayan,
+Sen Goethe-Institut ve telc sınavlarına hazırlayan,
 Almanca gramer konusunda uzman, deneyimli bir Almanca öğretmenisin.
 
-Öğrenci C1 seviyesinde Almanca öğreniyor.
+Öğrenci ${level} seviyesinde Almanca öğreniyor.
+SEVİYE NOTU: ${depthHint}
 
 KONU:
 "${topic}"
@@ -331,7 +342,7 @@ Bu bir ÖZET DEĞİL.
 - Hangi durumlarda tercih edilir?
 - Hangi benzer yapılarla karıştırılır?
 - Aralarındaki fark nedir?
-- C1 seviyesinde hangi inceliklere dikkat edilmelidir?
+- ${level} seviyesinde hangi inceliklere dikkat edilmelidir?
 - En sık yapılan hatalar nelerdir?
 
 ÖZEL OLARAK:
@@ -349,14 +360,14 @@ Her bağlaç için:
 10. En az 2 Almanca örnek
 11. Her örneğin Türkçe çevirisi
 12. Sık yapılan hata
-13. C1 seviyesinde önemli kullanım notu
+13. ${level} seviyesinde önemli kullanım notu
 
 ÖĞRETİM TARZI:
 - Türkçe anlat.
 - Almanca örnekleri mutlaka göster.
 - Örneklerin Türkçe çevirisini ver.
 - Gerektiğinde doğru ve yanlış örnekleri karşılaştır.
-- C1 seviyesine uygun detay ver.
+- ${level} seviyesine uygun detay ver.
 
 ÖNEMLİ:
 Yanıt SADECE geçerli JSON olsun. Markdown kullanma. JSON dışında hiçbir açıklama yazma.
@@ -381,7 +392,7 @@ Yanıt SADECE geçerli JSON olsun. Markdown kullanma. JSON dışında hiçbir a�
         }
       ],
       "commonMistake": "Sık yapılan hata.",
-      "importantNote": "C1 seviyesinde önemli not."
+      "importantNote": "${level} seviyesinde önemli not."
     }
   ]
 }
@@ -390,6 +401,6 @@ Yanıt SADECE geçerli JSON olsun. Markdown kullanma. JSON dışında hiçbir a�
   const rawContent = await callOpenRouter(prompt);
   const lesson = JSON.parse(rawContent);
 
-  await savePooledData("c1Lessons", docId, { lesson });
+  await savePooledData("levelLessons", docId, { lesson });
   return lesson;
 }
